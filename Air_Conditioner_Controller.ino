@@ -37,6 +37,7 @@ String topicStatus;    // devices/<id>/status
 
 constexpr uint8_t PIN_IR_RX = 10;   // uscita scheda fototransistor
 constexpr uint8_t PIN_IR_TX = 3;    // -> resistore base del transistor
+constexpr uint8_t PIN_IR_RX_EN = 4; // HIGH = scheda ricevitore alimentata (solo in learn mode)
 constexpr uint8_t PIN_BOOT  = 9;    // pulsante BOOT (strapping, ok dopo l'avvio)
 constexpr uint8_t PIN_LED   = 8;    // LED blu di bordo (verifica polarita'!)
 constexpr bool    LED_ACTIVE_LOW = true;
@@ -289,13 +290,15 @@ bool sameSignal(const std::vector<uint16_t>& a, const std::vector<uint16_t>& b) 
 
 void startLearning() {
   currentMode = MODE_LEARN_ON;
+  digitalWrite(PIN_IR_RX_EN, HIGH);     // alimenta il ricevitore
   irrecv.enableIRIn();
-  ignoreIrUntil = millis() + 500;
+  ignoreIrUntil = millis() + 500;       // ignora gli impulsi spuri all'accensione
   logLine("Learn Mode: ON (waiting for remote's ON button)");
 }
 
 void stopLearning() {
   irrecv.disableIRIn();
+  digitalWrite(PIN_IR_RX_EN, LOW);      // spegne il ricevitore
   currentMode = MODE_TRANSMIT;
   logLine("Learn Mode: OFF -> transmit mode");
   logStoredPayloads();
@@ -499,6 +502,8 @@ void setup() {
   pinMode(PIN_BOOT, INPUT_PULLUP);
   pinMode(PIN_LED, OUTPUT);
   setLed(true);
+  pinMode(PIN_IR_RX_EN, OUTPUT);
+  digitalWrite(PIN_IR_RX_EN, LOW);      // ricevitore spento all'avvio
 
   Wire.begin(OLED_SDA, OLED_SCL);
   display.begin();

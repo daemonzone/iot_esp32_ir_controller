@@ -24,6 +24,7 @@ Learn the ON and OFF infrared commands of any air-conditioner remote, then repla
 | GPIO | Function |
 |---|---|
 | 3 | IR transmitter output (to transistor base through 1 kΩ) |
+| 4 | IR receiver power enable (HIGH only while learning) |
 | 5 / 6 | OLED SDA / SCL (on-board) |
 | 8 | On-board LED (assumed active-low, see `LED_ACTIVE_LOW`) |
 | 9 | BOOT button (on-board) |
@@ -43,6 +44,30 @@ GPIO3 ──[ 1 kΩ ]── NPN base
 - With a 5 V supply, a 1.4 V LED and about 0.2 V across the transistor, 120 Ω gives about 28 mA. Use 150 Ω for about 22 mA. Do not go below 100 Ω.
 - Powering the LED from 3.3 V also works with about 56 Ω.
 - A 1 kΩ base resistor gives about 2.6 mA of base current, plenty to saturate the transistor.
+
+### IR receiver power control
+
+The receiver board is powered only in learn mode, so it cannot pick up stray signals (or the device's own LED) while transmitting. GPIO4 (`PIN_IR_RX_EN`) is HIGH only while learning.
+
+**Option A (recommended): power the board directly from GPIO4.** A typical receiver module draws 1-5 mA, well within what a GPIO can supply:
+
+```
+GPIO4 ── receiver VCC
+GND   ── receiver GND
+GPIO10 ── receiver OUT
+```
+
+**Option B: low-side NPN switch**, if the board draws more than about 10 mA:
+
+```
+3V3 ── receiver VCC
+receiver GND ── NPN collector
+NPN emitter ── GND
+GPIO4 ──[ 1 kΩ ]── NPN base
+GPIO10 ── receiver OUT
+```
+
+With option B the board's ground floats while it is off, so the OUT line is undefined. This is harmless because the firmware ignores the receiver in transmit mode.
 
 ## Software requirements
 

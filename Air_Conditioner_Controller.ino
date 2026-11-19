@@ -130,6 +130,43 @@ uint32_t lastMqttAttempt = 0;
 bool ntpStarted = false;
 
 // =====================================================
+// LOG SU SERIAL MONITOR
+// =====================================================
+
+// Ora locale (Italia) se NTP e' sincronizzato, altrimenti uptime
+String timestamp() {
+  time_t t = time(nullptr);
+  char buf[32];
+  if (t > 1700000000) {
+    struct tm tmInfo;
+    localtime_r(&t, &tmInfo);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmInfo);
+  } else {
+    snprintf(buf, sizeof(buf), "uptime %lu.%03lus", millis() / 1000, millis() % 1000);
+  }
+  return String(buf);
+}
+
+void logLine(const String& msg) {
+  Serial.printf("[%s] %s\n", timestamp().c_str(), msg.c_str());
+}
+
+// <label> (N timing): 9000,4500,560,...
+void logSignal(const char* label, const std::vector<uint16_t>& sig) {
+  Serial.printf("[%s] %s (%u timing): ", timestamp().c_str(), label, (unsigned)sig.size());
+  for (size_t i = 0; i < sig.size(); i++) {
+    if (i) Serial.print(',');
+    Serial.print(sig[i]);
+  }
+  Serial.println();
+}
+
+void logStoredPayloads() {
+  if (onRaw.empty())  logLine("ON  -> (not set)");  else logSignal("ON  ->", onRaw);
+  if (offRaw.empty()) logLine("OFF -> (not set)");  else logSignal("OFF ->", offRaw);
+}
+
+// =====================================================
 // LED
 // =====================================================
 
@@ -154,12 +191,15 @@ void updateLed() {
 void drawCentered(const uint8_t* font, int baseline, const char* text) {
   display.setFont(font);
   int w = display.getStrWidth(text);
-  display.drawStr((display.getDisplayWidth() - w) / 2, baseline, text);
+  int x = (display.getDisplayWidth() - w) / 2;
+  display.drawStr(x < 0 ? 0 : x, baseline, text);
 }
 
+// Area visibile 72x40.
+// Riga piccola: 8x13 bold (max 9 caratteri in 72 px), riga grande: 10x20 come in origine
 void showDisplay(const char* small, const char* big) {
   display.clearBuffer();
-  drawCentered(u8g2_font_6x10_tf, 12, small);
+  drawCentered(u8g2_font_8x13B_tf, 11, small);
   drawCentered(u8g2_font_10x20_tf, 34, big);
   display.sendBuffer();
 }
@@ -218,13 +258,14 @@ void startLearning() {
   currentMode = MODE_LEARN_ON;
   irrecv.enableIRIn();
   ignoreIrUntil = millis() + 500;
-  Serial.println("Learning ON: premi il tasto ACCENDI del telecomando");
+  logLine("Learn Mode: ON (waiting for remote's ON button)");
 }
 
 void stopLearning() {
   irrecv.disableIRIn();
   currentMode = MODE_TRANSMIT;
-  Serial.println("Modalita' trasmissione");
+  logLine("Learn Mode: OFF -> transmit mode");
+  logStoredPayloads();
 }
 
 void processIRLearning() {
@@ -235,12 +276,14 @@ void processIRLearning() {
     return;
   }
 
-  Serial.print(resultToHumanReadableBasic(&irResults));
-
   uint16_t len = getCorrectedRawLength(&irResults);
 
+  logLine("IR signal received: " + String(typeToString(irResults.decode_type).c_str()) +
+          ", " + String(irResults.bits) + " bits, " + String(len) + " raw timing" +
+          (irResults.overflow ? ", OVERFLOW" : ""));
+
   if (irResults.overflow || len < MIN_RAW_LEN) {
-    Serial.println("Segnale scartato (troppo corto o buffer overflow)");
+    logLine("Signal discarded (too short or buffer overflow)");
     irrecv.resume();
     return;
   }
@@ -252,7 +295,8 @@ void processIRLearning() {
   if (currentMode == MODE_LEARN_ON) {
     onRaw = captured;
     saveSignal("on", onRaw);
-    Serial.printf("ON salvato (%u timing)\n", (unsigned)onRaw.size());
+    logSignal("Received Payload: ON  ->", onRaw);
+    logLine("Learn Mode: OFF (waiting for remote's OFF button)");
 
     currentMode = MODE_LEARN_OFF;
     ignoreIrUntil = millis() + 1500;
@@ -261,7 +305,7 @@ void processIRLearning() {
   } else if (currentMode == MODE_LEARN_OFF) {
 
     if (sameSignal(captured, onRaw)) {
-      Serial.println("Uguale a ON: ignorato, premi il tasto SPEGNI");
+      logLine("Signal identical to ON: ignored, press the remote's OFF button");
       ignoreIrUntil = millis() + 500;
       irrecv.resume();
       return;
@@ -269,7 +313,7 @@ void processIRLearning() {
 
     offRaw = captured;
     saveSignal("off", offRaw);
-    Serial.printf("OFF salvato (%u timing)\n", (unsigned)offRaw.size());
+    logSignal("Received Payload: OFF ->", offRaw);
 
     showDisplay("Salvato", "OK");
     delay(1200);
@@ -293,7 +337,8 @@ int transmitIR(const char* command) {
   if (sig->empty()) return 2;
 
   irsend.sendRaw(sig->data(), sig->size(), IR_CARRIER_KHZ);
-  Serial.printf("IR inviato: %s (%u timing)\n", command, (unsigned)sig->size());
+  logLine(String("IR sent: ") + command + " (" + String((unsigned)sig->size()) + " timing @ " +
+          String(IR_CARRIER_KHZ) + " kHz)");
   return 0;
 }
 
@@ -313,11 +358,14 @@ void publishResponse(bool success, const char* error = nullptr) {
   char buffer[128];
   serializeJson(response, buffer, sizeof(buffer));
   mqtt.publish(topicStatus.c_str(), buffer, false);
-  Serial.printf("MQTT response: %s\n", buffer);
+  logLine(String("MQTT response sent -> ") + buffer);
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  Serial.printf("MQTT message on %s\n", topic);
+  String raw;
+  raw.reserve(length);
+  for (unsigned int i = 0; i < length; i++) raw += (char)payload[i];
+  logLine("Received Command (MQTT): " + timestamp() + " " + raw + "  [topic " + topic + "]");
 
   JsonDocument doc;
   if (deserializeJson(doc, payload, length)) {
@@ -326,7 +374,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   const char* command = doc["command"] | "";
-  Serial.printf("Command: %s\n", command);
 
   switch (transmitIR(command)) {
     case 0: publishResponse(true); break;
@@ -348,7 +395,7 @@ void maintainConnections() {
     ntpStarted = false;
     if (now - lastWifiAttempt > 10000 || lastWifiAttempt == 0) {
       lastWifiAttempt = now;
-      Serial.println("WiFi: connessione...");
+      logLine("WiFi: connecting...");
       WiFi.disconnect();
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     }
@@ -357,10 +404,9 @@ void maintainConnections() {
 
   // L'orologio serve alla verifica del certificato TLS
   if (!ntpStarted) {
-    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.google.com");
     ntpStarted = true;
-    Serial.print("WiFi connesso: ");
-    Serial.println(WiFi.localIP());
+    logLine("WiFi connected, IP " + WiFi.localIP().toString() + ", syncing NTP...");
   }
   if (time(nullptr) < 1700000000) return;   // NTP non ancora sincronizzato
 
@@ -372,13 +418,12 @@ void maintainConnections() {
   if (now - lastMqttAttempt < 5000 && lastMqttAttempt != 0) return;
   lastMqttAttempt = now;
 
-  Serial.print("Connessione EMQX...");
+  logLine("EMQX: connecting...");
   if (mqtt.connect(deviceId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
-    Serial.println("ok");
+    logLine("EMQX: connected, subscribed to " + topicCommand);
     mqtt.subscribe(topicCommand.c_str());
-    Serial.println("Subscribed: " + topicCommand);
   } else {
-    Serial.printf("fallita, rc=%d\n", mqtt.state());
+    logLine("EMQX: failed, rc=" + String(mqtt.state()));
   }
 }
 
@@ -407,7 +452,10 @@ void checkBootButton() {
 
 void setup() {
   Serial.begin(115200);
-  delay(300);
+  // USB CDC: aspetta (max 4 s) che il Serial Monitor si colleghi, cosi' non perdi i log d'avvio
+  uint32_t t0 = millis();
+  while (!Serial && millis() - t0 < 4000) delay(10);
+  delay(200);
   Serial.println("\nAC IR MQTT Controller");
 
   deviceId = "esp32-c3-" + String((uint32_t)(ESP.getEfuseMac() & 0xFFFFFFFF), HEX);
@@ -424,13 +472,13 @@ void setup() {
   showDisplay("Avvio", "...");
 
   irsend.begin();
-  irrecv.disableIRIn();
+  // il ricevitore resta spento finche' non si entra in learn mode (enableIRIn)
 
   preferences.begin("ir", false);
   loadSignal("on", onRaw);
   loadSignal("off", offRaw);
-  Serial.printf("ON: %u timing, OFF: %u timing\n",
-                (unsigned)onRaw.size(), (unsigned)offRaw.size());
+  logLine("Stored payloads loaded from flash:");
+  logStoredPayloads();
 
   secureClient.setCACert(ROOT_CA);
   mqtt.setServer(MQTT_HOST, MQTT_PORT);

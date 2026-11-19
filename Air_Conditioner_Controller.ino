@@ -174,9 +174,33 @@ void setLed(bool on) {
   digitalWrite(PIN_LED, (on ^ LED_ACTIVE_LOW) ? HIGH : LOW);
 }
 
+// Feedback per i comandi MQTT: testo breve sul display + LED che lampeggia 2 volte
+constexpr uint32_t OVERLAY_MS = 1500;
+uint32_t overlayUntil = 0;
+String overlayBig;
+uint32_t flashStart = 0;
+bool flashing = false;
+
+void showCommandFeedback(const char* command) {
+  if (currentMode != MODE_TRANSMIT) return;
+  overlayBig = String(command);
+  overlayBig.toUpperCase();
+  if (overlayBig.length() == 0) overlayBig = "?";
+  if (overlayBig.length() > 7) overlayBig = overlayBig.substring(0, 7);   // 7 x 10 px = 70 px
+  overlayUntil = millis() + OVERLAY_MS;
+  flashStart = millis();
+  flashing = true;
+}
+
 void updateLed() {
   if (currentMode == MODE_TRANSMIT) {
-    setLed(true);                       // fisso
+    bool on = true;                     // fisso
+    if (flashing) {
+      uint32_t t = millis() - flashStart;
+      if (t >= 360) flashing = false;
+      else on = (t / 120) % 2 == 1;     // spento-acceso-spento-acceso: 2 lampeggi
+    }
+    setLed(on);
   } else if (millis() - lastBlink >= 250) {
     lastBlink = millis();               // lampeggiante
     blinkState = !blinkState;
@@ -209,6 +233,15 @@ String lastDisplayKey;
 void updateDisplay() {
   const char* small = "";
   const char* big = "";
+
+  if (currentMode == MODE_TRANSMIT && (int32_t)(overlayUntil - millis()) > 0) {
+    String key = "ovl|" + overlayBig;
+    if (key != lastDisplayKey) {
+      lastDisplayKey = key;
+      showDisplay("RECEIVED", overlayBig.c_str());
+    }
+    return;
+  }
 
   switch (currentMode) {
     case MODE_LEARN_ON:  small = "Comando:"; big = "ON";  break;
@@ -374,6 +407,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   const char* command = doc["command"] | "";
+  showCommandFeedback(command);
 
   switch (transmitIR(command)) {
     case 0: publishResponse(true); break;

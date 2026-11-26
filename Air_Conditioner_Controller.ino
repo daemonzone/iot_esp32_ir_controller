@@ -47,6 +47,12 @@ constexpr uint8_t OLED_SCL = 6;
 
 constexpr uint16_t IR_CARRIER_KHZ = 38;
 
+// Il primo invio dopo un periodo di inattivita' puo' non essere riconosciuto dal condizionatore
+// (portante generata in software, sensibile a cache fredda/WiFi). Si invia la trama piu' volte.
+// Metti 1 per disattivare.
+constexpr uint8_t  IR_SEND_REPEATS = 2;
+constexpr uint32_t IR_REPEAT_GAP_MS = 60;
+
 // =====================================================
 // CERTIFICATO CA EMQX (DigiCert Global Root G2)
 // =====================================================
@@ -372,9 +378,12 @@ int transmitIR(const char* command) {
   if (currentMode != MODE_TRANSMIT) return 3;
   if (sig->empty()) return 2;
 
-  irsend.sendRaw(sig->data(), sig->size(), IR_CARRIER_KHZ);
+  for (uint8_t i = 0; i < IR_SEND_REPEATS; i++) {
+    if (i) delay(IR_REPEAT_GAP_MS);
+    irsend.sendRaw(sig->data(), sig->size(), IR_CARRIER_KHZ);
+  }
   logLine(String("IR sent: ") + command + " (" + String((unsigned)sig->size()) + " timing @ " +
-          String(IR_CARRIER_KHZ) + " kHz)");
+          String(IR_CARRIER_KHZ) + " kHz, x" + String(IR_SEND_REPEATS) + ")");
   return 0;
 }
 
@@ -527,6 +536,7 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);   // niente modem sleep: meno interruzioni durante l'invio IR
 
   Serial.println("Topic cmd: " + topicCommand);
 }
